@@ -4,3 +4,13 @@ requests
 python-dotenv
 langchain_groq 
 langchain-core
+faster-whisper
+pyttsx3 
+soundfile
+flask-socketio 
+eventlet
+librosa
+pydub
+websockets 
+deepgram-sdk 
+azure-cognitiveservices-speech 

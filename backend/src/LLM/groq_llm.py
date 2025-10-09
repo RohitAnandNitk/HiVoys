@@ -1,32 +1,79 @@
+# src/LLM/groq_llm.py
 import os
-from dotenv import load_dotenv
-from base import BaseLLM
+from groq import Groq
 
-from langchain_groq import ChatGroq  # Assuming langchain-groq is installed
-
-# Load environment variables from .env
-load_dotenv()
-
-class GroqLLM(BaseLLM):
-    def __init__(self, model_name: str = "llama-3.3-70b-versatile"): # llama3-70b-8192 ,  llama3-70b-4096 , llama-3.3-70b-versatile
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY not found in environment variables")
-        
-        super().__init__(model_name)
-        self.api_key = api_key
-
+class GroqLLM:
+    def __init__(self):
+        self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+        # Use fastest model for lowest latency
+        self.model_name = "llama-3.1-8b-instant"
+    
     def get_model(self):
-        return ChatGroq(
-            api_key=self.api_key,
-            model_name=self.model_name,
-            temperature=0
-        )
-
-if __name__ == "__main__":
-    print("🧠 HiVoys (LangChain + Groq)")
-    groq =  GroqLLM()
-    groq_model = groq.get_model()
-    user_input = input("Ask HiVoys: ")
-    response = groq_model.invoke(user_input)
-    print("\nHiVoys:", response.content)
+        return self
+    
+    def stream(self, user_message):
+        """
+        Stream response token by token for ultra-low latency.
+        Yields each chunk as it arrives.
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a professional interviewer. Keep responses concise and conversational. Maximum 2-3 sentences."
+            },
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ]
+        
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=120,
+                stream=True  # Enable streaming
+            )
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            print(f"❌ Groq streaming error: {e}")
+            raise
+    
+    def invoke(self, messages):
+        """
+        Non-streaming fallback for compatibility.
+        """
+        formatted_messages = [
+            {
+                "role": "system",
+                "content": "You are a professional interviewer. Keep responses concise, clear, and conversational. Aim for 2-3 sentences maximum."
+            }
+        ]
+        
+        for msg in messages:
+            if isinstance(msg, dict):
+                formatted_messages.append(msg)
+            else:
+                formatted_messages.append({
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", str(msg))
+                })
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=formatted_messages,
+                temperature=0.7,
+                max_tokens=120,
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            print(f"❌ Groq API error: {e}")
+            raise
