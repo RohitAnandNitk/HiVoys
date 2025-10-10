@@ -8,10 +8,98 @@ const VoiceAgent = () => {
   const socketRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioContextRef = useRef(null);
+  const audioQueueRef = useRef([]);
+  const currentAudioRef = useRef(null);
+  const isPlayingRef = useRef(false);
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [aiReply, setAiReply] = useState("");
   const [isSpeaking, setIsSpeaking] = useState(false);
+
+  // Define playAudioQueue function before useEffect
+  const playAudioQueue = async () => {
+    if (isPlayingRef.current) {
+      console.log("Already playing, skipping...");
+      return;
+    }
+
+    if (audioQueueRef.current.length === 0) {
+      console.log("Queue empty, stopping playback");
+      isPlayingRef.current = false;
+      setIsSpeaking(false);
+      return;
+    }
+
+    isPlayingRef.current = true;
+    setIsSpeaking(true);
+
+    const chunk = audioQueueRef.current.shift();
+    console.log(
+      "Playing chunk from queue, remaining:",
+      audioQueueRef.current.length
+    );
+
+    try {
+      let audioBlob;
+
+      // Handle different data types
+      if (chunk instanceof Blob) {
+        audioBlob = chunk;
+      } else if (chunk instanceof ArrayBuffer || chunk instanceof Uint8Array) {
+        audioBlob = new Blob([chunk], { type: "audio/mpeg" });
+      } else if (typeof chunk === "string") {
+        // If it's base64 string, decode it
+        const binaryString = atob(chunk);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        audioBlob = new Blob([bytes], { type: "audio/mpeg" });
+      } else {
+        console.error("Unknown chunk type:", typeof chunk);
+        isPlayingRef.current = false;
+        playAudioQueue(); // Try next chunk
+        return;
+      }
+
+      console.log("Created audio blob:", audioBlob.size, "bytes");
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      // Stop previous audio if still playing
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+
+      const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
+
+      audio.onended = () => {
+        console.log("Audio ended, playing next...");
+        URL.revokeObjectURL(audioUrl);
+        currentAudioRef.current = null;
+        isPlayingRef.current = false;
+        // Play next chunk in queue
+        playAudioQueue();
+      };
+
+      audio.onerror = (err) => {
+        console.error("Audio playback error:", err);
+        URL.revokeObjectURL(audioUrl);
+        currentAudioRef.current = null;
+        isPlayingRef.current = false;
+        // Try next chunk even on error
+        playAudioQueue();
+      };
+
+      await audio.play();
+    } catch (err) {
+      console.error("Error playing audio:", err);
+      isPlayingRef.current = false;
+      // Try next chunk
+      playAudioQueue();
+    }
+  };
 
   useEffect(() => {
     // Initialize socket connection
@@ -43,13 +131,9 @@ const VoiceAgent = () => {
       console.log(
         "Received TTS chunk - Type:",
         typeof chunk,
-        "Constructor:",
-        chunk?.constructor?.name
+        "Size:",
+        chunk?.byteLength || chunk?.length
       );
-      console.log("Is ArrayBuffer:", chunk instanceof ArrayBuffer);
-      console.log("Is Uint8Array:", chunk instanceof Uint8Array);
-      console.log("Is Blob:", chunk instanceof Blob);
-      console.log("Raw chunk:", chunk);
 
       if (!chunk) {
         console.error("Received empty chunk");
@@ -61,57 +145,12 @@ const VoiceAgent = () => {
         stopRecording();
       }
 
-      // Play audio immediately
-      try {
-        let audioBlob;
+      // Add to queue
+      audioQueueRef.current.push(chunk);
 
-        // Handle different data types
-        if (chunk instanceof Blob) {
-          audioBlob = chunk;
-        } else if (
-          chunk instanceof ArrayBuffer ||
-          chunk instanceof Uint8Array
-        ) {
-          audioBlob = new Blob([chunk], { type: "audio/mpeg" });
-        } else if (typeof chunk === "string") {
-          // If it's base64 string, decode it
-          const binaryString = atob(chunk);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          audioBlob = new Blob([bytes], { type: "audio/mpeg" });
-        } else {
-          console.error("Unknown chunk type:", typeof chunk);
-          return;
-        }
-
-        console.log("Created blob:", audioBlob.size, "bytes");
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
-
-        setIsSpeaking(true);
-
-        audio.onended = () => {
-          URL.revokeObjectURL(audioUrl);
-          setIsSpeaking(false);
-        };
-
-        audio.onerror = (err) => {
-          console.error("Audio playback error:", err);
-          console.error("Audio src:", audio.src);
-          console.error("Audio error code:", audio.error?.code);
-          console.error("Audio error message:", audio.error?.message);
-          URL.revokeObjectURL(audioUrl);
-          setIsSpeaking(false);
-        };
-
-        audio.play().catch((err) => {
-          console.error("Error playing audio:", err);
-          setIsSpeaking(false);
-        });
-      } catch (err) {
-        console.error("Error creating audio:", err);
+      // Start playing queue if not already playing
+      if (!isPlayingRef.current) {
+        playAudioQueue();
       }
     });
 
@@ -127,11 +166,25 @@ const VoiceAgent = () => {
     return () => {
       socketRef.current.disconnect();
       stopRecording();
+      // Clean up audio on unmount
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+      }
+      audioQueueRef.current = [];
     };
   }, []);
 
   const startRecording = async () => {
     try {
+      // Clear any existing audio queue and stop current playback
+      audioQueueRef.current = [];
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+      isPlayingRef.current = false;
+      setIsSpeaking(false);
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -182,6 +235,7 @@ const VoiceAgent = () => {
       mediaRecorderRef.current = { processor, source, stream };
       setIsRecording(true);
       setTranscript(""); // Clear previous transcript
+      setAiReply(""); // Clear previous AI reply
       console.log("🎙️ Recording started...");
     } catch (error) {
       console.error("❌ Error starting recording:", error);

@@ -19,7 +19,8 @@ class GroqLLM:
         messages = [
             {
                 "role": "system",
-                "content": "You are a professional interviewer. Keep responses concise and conversational. Maximum 2-3 sentences."
+                "content": "You are a professional interviewer nad your name is Kavita. Keep responses concise and conversational. Name of the interviewee is Rohit and your are going to ask about his educataion background. and you will start the conversation first."
+
             },
             {
                 "role": "user",
